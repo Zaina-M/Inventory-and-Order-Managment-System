@@ -93,46 +93,94 @@ GROUP BY c.customer_id, c.full_name;
 
 DELIMITER //
 
--- Stored Procedure(automates creating an order)
+-- Trigger: Log Inventory Changes
+CREATE TRIGGER ItemUpdateTrigger
+AFTER UPDATE ON Inventory
+FOR EACH ROW
+BEGIN
+    IF OLD.quantity <> NEW.quantity THEN
+        INSERT INTO InventoryLogs (product_id, old_quantity, new_quantity, action_type)
+        VALUES (OLD.product_id, OLD.quantity, NEW.quantity, 'UPDATE');
+    END IF;
+END //
+
+-- Stored Procedure(automates creating an order with multiple items via JSON)
+
+DROP PROCEDURE IF EXISTS ProcessNewOrder //
 
 CREATE PROCEDURE ProcessNewOrder(
-    IN p_customer_id INT,
-    IN p_product_id INT,
-    IN p_quantity INT
+    IN p_customer_id CHAR(36),
+    IN p_order_details JSON
 )
 BEGIN
+    DECLARE i INT DEFAULT 0;
+    DECLARE item_count INT;
+    DECLARE current_product_id INT;
+    DECLARE current_quantity INT;
+    DECLARE current_price DECIMAL(10,2);
     DECLARE current_stock INT;
+    DECLARE total_order_amount DECIMAL(10,2) DEFAULT 0;
+    DECLARE insufficient_stock INT DEFAULT 0;
     
-    -- Get current inventory
-    SELECT quantity INTO current_stock
-    FROM Inventory
-    WHERE product_id = p_product_id;
+    -- Start Transaction
+    START TRANSACTION;
+
+    -- Calculate total amount and check stock availability first
+    SET item_count = JSON_LENGTH(p_order_details);
     
-    -- Check stock
-    IF current_stock >= p_quantity THEN
-        START TRANSACTION;
+    WHILE i < item_count DO
+        SET current_product_id = JSON_UNQUOTE(JSON_EXTRACT(p_order_details, CONCAT('$[', i, '].product_id')));
+        SET current_quantity = JSON_UNQUOTE(JSON_EXTRACT(p_order_details, CONCAT('$[', i, '].quantity')));
         
-        -- Reduce inventory
-        UPDATE Inventory
-        SET quantity = quantity - p_quantity
-        WHERE product_id = p_product_id;
+        -- Get price and stock
+        SELECT price, quantity INTO current_price, current_stock
+        FROM Products p
+        JOIN Inventory inv ON p.product_id = inv.product_id
+        WHERE p.product_id = current_product_id;
         
-        -- Create new order
+        IF current_stock < current_quantity THEN
+            SET insufficient_stock = 1;
+        END IF;
+        
+        SET total_order_amount = total_order_amount + (current_price * current_quantity);
+        SET i = i + 1;
+    END WHILE;
+    
+    IF insufficient_stock = 1 THEN
+        ROLLBACK;
+        SELECT 'Error: One or more items have insufficient stock.' AS message;
+    ELSE
+        -- Insert Order
         INSERT INTO Orders (customer_id, order_date, total_amount, order_status)
-        VALUES (p_customer_id, CURDATE(), p_quantity * (SELECT price FROM Products WHERE product_id = p_product_id), 'Pending');
+        VALUES (p_customer_id, CURDATE(), total_order_amount, 'Pending');
         
-        -- Get last inserted order ID
         SET @last_order_id = LAST_INSERT_ID();
         
-        -- Add item to OrderItems
-        INSERT INTO OrderItems (order_id, product_id, quantity, price)
-        VALUES (@last_order_id, p_product_id, p_quantity, (SELECT price FROM Products WHERE product_id = p_product_id));
+        -- Reset loop index
+        SET i = 0;
+        
+        -- Process each item
+        WHILE i < item_count DO
+            SET current_product_id = JSON_UNQUOTE(JSON_EXTRACT(p_order_details, CONCAT('$[', i, '].product_id')));
+            SET current_quantity = JSON_UNQUOTE(JSON_EXTRACT(p_order_details, CONCAT('$[', i, '].quantity')));
+            
+            -- Get price again
+            SELECT price INTO current_price FROM Products WHERE product_id = current_product_id;
+            
+            -- Insert Order Item
+            INSERT INTO OrderItems (order_id, product_id, quantity, price)
+            VALUES (@last_order_id, current_product_id, current_quantity, current_price);
+            
+            -- Update Inventory (Trigger will handle logging)
+            UPDATE Inventory
+            SET quantity = quantity - current_quantity
+            WHERE product_id = current_product_id;
+            
+            SET i = i + 1;
+        END WHILE;
         
         COMMIT;
-    ELSE
-        -- Not enough stock, rollback
-        ROLLBACK;
-        SELECT CONCAT('Error: Only ', current_stock, ' units in stock') AS message;
+        SELECT 'Order placed successfully.' AS message, @last_order_id AS order_id;
     END IF;
 END //
 
@@ -145,20 +193,21 @@ DELIMITER ;
 
 /* Test Cases for ProcessNewOrder procedure
 -- 1. Place order with enough stock
-    CALL ProcessNewOrder(1, 1, 5);
+    CALL ProcessNewOrder('1', '[{"product_id": 1, "quantity": 5}]');
 
 -- 2. Place order with quantity exceeding stock (should show error)
-    CALL ProcessNewOrder(2, 1, 1000);
+    CALL ProcessNewOrder('2', '[{"product_id": 1, "quantity": 1000}]');
 
 -- 3. Place multiple orders for the same product and check inventory updates
-    CALL ProcessNewOrder(3, 4, 2);
-    CALL ProcessNewOrder(4, 4, 3);
+    CALL ProcessNewOrder('3', '[{"product_id": 4, "quantity": 2}, {"product_id": 4, "quantity": 3}]');
     SELECT * FROM Inventory WHERE product_id = 4;
 
 -- 4. Check last order inserted in Orders table
-   SELECT * FROM Orders ORDER BY order_id DESC LIMIT 1;
+    SELECT * FROM Orders ORDER BY order_id DESC LIMIT 1;
 
 -- 5. Check last order items in OrderItems table
-   SELECT * FROM OrderItems ORDER BY order_item_id DESC LIMIT 5;
-*/ 
-
+    SELECT * FROM OrderItems ORDER BY order_item_id DESC LIMIT 5;
+    
+-- 6. Check Inventory Logs (This is where your logs are stored)
+    SELECT * FROM InventoryLogs ORDER BY change_time DESC;
+*/

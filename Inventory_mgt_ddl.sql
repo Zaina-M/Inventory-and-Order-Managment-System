@@ -33,6 +33,7 @@ CREATE TABLE Orders (
 );
 
 
+
 CREATE TABLE OrderItems (
     order_item_id INT AUTO_INCREMENT PRIMARY KEY,
     order_id INT NOT NULL,
@@ -41,6 +42,15 @@ CREATE TABLE OrderItems (
     price DECIMAL(10,2) CHECK (price >= 0),
     FOREIGN KEY (order_id) REFERENCES Orders(order_id),
     FOREIGN KEY (product_id) REFERENCES Products(product_id)
+);
+
+CREATE TABLE InventoryLogs (
+    log_id INT AUTO_INCREMENT PRIMARY KEY,
+    product_id INT,
+    old_quantity INT,
+    new_quantity INT,
+    change_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+    action_type VARCHAR(50)
 );
 
 
