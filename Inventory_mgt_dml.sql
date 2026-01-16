@@ -109,7 +109,7 @@ END //
 DROP PROCEDURE IF EXISTS ProcessNewOrder //
 
 CREATE PROCEDURE ProcessNewOrder(
-    IN p_customer_id CHAR(36),
+    IN p_customer_id INT,
     IN p_order_details JSON
 )
 BEGIN
