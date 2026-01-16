@@ -1,4 +1,4 @@
-CREATE DATABASE inventory_system;
+CREATE DATABASE IF NOT EXISTS inventory_system;
 USE inventory_system;
 CREATE TABLE Customers (
     customer_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -31,7 +31,7 @@ CREATE TABLE Orders (
     order_status VARCHAR(20) DEFAULT 'Pending',
     FOREIGN KEY (customer_id) REFERENCES Customers(customer_id)
 );
-
+  
 
 
 CREATE TABLE OrderItems (
